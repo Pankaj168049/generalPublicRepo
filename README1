@@ -1,0 +1,194 @@
+1. Main.java (Project Entry Point)
+
+Add logger at top.
+
+private static final Logger logger =
+        LogManager.getLogger(Main.class);
+Start of main()
+logger.info("=================================================");
+logger.info("Starting Axiomatics ALFA Automation");
+logger.info("=================================================");
+After reading input parameters
+logger.info("Input Excel File: {}", excelPath);
+logger.info("Output Directory: {}", outputDir);
+Before reading roles
+logger.info("Reading Roles Overview sheet");
+After roles loaded
+logger.info("Total roles loaded: {}", roles.size());
+Before API processing
+logger.info("Reading Service & Role Mapping sheet");
+Before UI processing
+logger.info("Reading UI & Feature Mapping sheet");
+Before writing files
+logger.info("Generating ALFA files...");
+After each file
+logger.info("api.alfa generated successfully");
+logger.info("menu.alfa generated successfully");
+logger.info("uiFeature.alfa generated successfully");
+End of execution
+logger.info("Automation completed successfully");
+Catch block
+logger.error("Automation failed", e);
+2. RoleExcelReader
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(RoleExcelReader.class);
+When sheet starts
+logger.info("Processing Roles Overview sheet");
+When role read
+
+(DEBUG level)
+
+logger.debug("Reading role: {}", rawRoleName);
+When skipping strike-through
+logger.warn("Skipping deprecated role: {}", rawRoleName);
+When LDAP DN missing
+logger.error("LDAP DN missing for role '{}' at row {}", rawRoleName, rowIndex + 1);
+When role added
+logger.debug("Added role {} with LDAP {}", roleName, ldapDn);
+After completion
+logger.info("Total valid roles loaded: {}", roles.size());
+3. MenuExcelReader
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(MenuExcelReader.class);
+Start
+logger.info("Processing Domain & Role Mapping sheet");
+When domain detected
+logger.debug("Detected domain: {}", domain);
+When role granted permission
+logger.debug("Role {} permitted for domain {}", role, domain);
+Invalid matrix value
+logger.error("Invalid value '{}' at row {}, column {}", value, rowIndex + 1, colIndex + 1);
+Domain with no roles
+logger.warn("Domain '{}' has no permitted roles", domain);
+End summary
+logger.info("Total domains processed: {}", domainMappings.size());
+4. ApiExcelReader
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(ApiExcelReader.class);
+Start
+logger.info("Processing Service & Role Mapping sheet");
+Header detection
+logger.debug("Detected service {} with operation {}", service, operation);
+Duplicate detection
+logger.error("Duplicate Service-Operation combination detected: {} - {}", service, operation);
+Role row read
+logger.debug("Processing role {}", roleName);
+Permission grant
+logger.debug("Role {} allowed for {} / {}", roleName, service, operation);
+Invalid value
+logger.error("Invalid permission '{}' at row {}, column {}", value, rowIndex + 1, colIndex + 1);
+End summary
+logger.info("Total services processed: {}", serviceMap.size());
+5. UiExcelReader
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(UiExcelReader.class);
+Start
+logger.info("Processing UI & Feature Mapping sheet");
+Column mapping
+logger.debug("Mapped column {} -> {} > {} > {} > {}", col, ss, comp, feat, sec);
+Role row
+logger.debug("Processing role {}", role);
+Permission parsing
+logger.debug("Permission '{}' parsed for role {}", value, role);
+Adding permission
+logger.debug("Role {} allowed for action {} at {} > {} > {} > {}",
+        role, action, path[0], path[1], path[2], path[3]);
+Invalid CRUD
+logger.error("Invalid CRUD permission '{}' at row {}", value, rowIndex + 1);
+Unknown role
+logger.error("Unknown role '{}' found in UI sheet", role);
+End summary
+logger.info("UI hierarchy built successfully");
+6. ApiAlfaGenerator
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(ApiAlfaGenerator.class);
+Start generation
+logger.info("Generating API ALFA policies");
+For each service
+logger.debug("Generating policyset for service {}", service.getService());
+For each operation
+logger.debug("Generating operation {}", operation.getOperation());
+End summary
+logger.info("API ALFA generation completed");
+7. UiAlfaGenerator
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(UiAlfaGenerator.class);
+Start
+logger.info("Generating UI ALFA policies");
+Node creation
+logger.debug("Generating policyset for {}", node.getName());
+Action policies
+logger.debug("Generating {} action policy", entry.getKey());
+Role mapping
+logger.debug("Role {} mapped to {}", role, entry.getKey());
+End
+logger.info("UI ALFA generation completed");
+8. FileWriterUtil
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(FileWriterUtil.class);
+Before writing file
+logger.info("Writing file {}", fileName);
+After success
+logger.info("File written successfully: {}", fileName);
+Error
+logger.error("Failed to write file {}", fileName, e);
+9. PermissionUtil (Optional)
+
+Logger:
+
+private static final Logger logger =
+        LogManager.getLogger(PermissionUtil.class);
+
+When parsing permissions:
+
+logger.debug("Parsing permission string {}", value);
+10. Execution Time Logging (Recommended)
+
+In Main:
+
+long start = System.currentTimeMillis();
+
+At end:
+
+logger.info("Total execution time: {} ms",
+        System.currentTimeMillis() - start);
+What Your Final Logs Will Look Like
+
+Example run:
+
+INFO  Starting Axiomatics ALFA Automation
+INFO  Reading Roles Overview sheet
+INFO  Total valid roles loaded: 18
+INFO  Processing Service & Role Mapping sheet
+INFO  Total services processed: 124
+INFO  Processing UI & Feature Mapping sheet
+INFO  UI hierarchy built successfully
+INFO  Generating API ALFA policies
+INFO  Generating UI ALFA policies
+INFO  Writing api.alfa
+INFO  Writing uiFeature.alfa
+INFO  Automation completed successfully
+INFO  Total execution time: 732 ms
+
+If you want, I can also give you one extremely useful improvement next: a single ValidationReport system so that instead of failing on the first error in Excel, your automation collects all errors and prints them at once (which is very useful for Excel-driven systems like this).
