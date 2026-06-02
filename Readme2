@@ -1,0 +1,81 @@
+# Root Cause Analysis (RCA)
+
+## Issue Summary
+
+After deploying the ALFA policies generated through the automation framework to the DEV environment, UI authorization issues were observed in the application. Certain users were either receiving additional UI access or missing expected UI access.
+
+## Impact
+
+* UI components were not displayed according to expected role permissions.
+* Authorization behavior in DEV differed from the behavior observed during testing.
+* Additional validation and analysis were required before deployment could proceed.
+
+## Investigation Performed
+
+1. Verified the generated ALFA files produced by the automation framework.
+2. Compared generated ALFA policies against:
+
+   * Role Overview Sheet
+   * UI Feature Sheet
+   * API Sheet
+   * Existing manually maintained ALFA policies
+3. Executed policy validation and authorization testing.
+4. Performed a role-by-role comparison between matrix sheet permissions and existing deployed ALFA policies.
+
+## Findings
+
+The automation framework generates ALFA policies strictly based on the permissions defined in the authorization matrix sheets.
+
+During comparison, multiple discrepancies were identified between the matrix sheets and the existing manually maintained ALFA policies:
+
+### Finding 1 – Excessive Permissions in Existing ALFA Policies
+
+For several roles:
+
+| Role           | Matrix Sheet Permission | Existing ALFA Permission |
+| -------------- | ----------------------- | ------------------------ |
+| Example Role A | R                       | CRUD                     |
+| Example Role B | R                       | CRUD                     |
+
+The existing ALFA policies granted broader permissions than those defined in the authorization matrix.
+
+### Finding 2 – Missing Role Definitions
+
+For some roles:
+
+| Role           | Matrix Sheet Permission | Existing ALFA Permission |
+| -------------- | ----------------------- | ------------------------ |
+| Example Role C | R                       | Not Present              |
+
+Roles defined in the matrix sheet were not present in the manually maintained ALFA policies.
+
+### Finding 3 – Reduced Permissions in Existing ALFA Policies
+
+For some roles:
+
+| Role           | Matrix Sheet Permission | Existing ALFA Permission |
+| -------------- | ----------------------- | ------------------------ |
+| Example Role D | CRUD                    | R                        |
+
+The existing ALFA policies granted fewer permissions than specified in the matrix sheet.
+
+## Root Cause
+
+The automation-generated ALFA policies were created using the authorization matrix sheets as the source of truth.
+
+However, the existing manually maintained ALFA policies contained permission configurations that were not aligned with the matrix sheets. As a result, when the automated policies replaced the existing policies, authorization behavior changed and exposed pre-existing inconsistencies between the documented authorization matrix and the deployed ALFA configuration.
+
+## Corrective Actions
+
+1. Identified and documented all permission discrepancies between the matrix sheets and existing ALFA policies.
+2. Shared the discrepancy report with the Application Team for validation.
+3. Updated the affected role mappings after business confirmation.
+4. Regenerated ALFA policies based on the approved authorization source.
+
+## Preventive Actions
+
+1. Establish a single source of truth for authorization definitions.
+2. Introduce automated validation checks between matrix sheets and generated ALFA policies.
+3. Perform discrepancy analysis before deployment of generated policies.
+4. Obtain business/application owner sign-off whenever matrix sheet permissions differ from existing deployed policies.
+5. Include authorization regression testing as part of deployment validation.
