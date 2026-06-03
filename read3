@@ -1,0 +1,45 @@
+# Appendix A – Permission Discrepancy Report
+
+## Summary
+
+Comparison performed between:
+
+1. Authorization Matrix Sheets
+2. Existing Manual ALFA Policies
+3. Automation Generated ALFA Policies
+
+### Statistics
+
+| Metric                     | Count |
+| -------------------------- | ----- |
+| Total Roles Reviewed       | XX    |
+| Total UI Features Reviewed | XX    |
+| Permission Mismatches      | XX    |
+| Missing Roles              | XX    |
+| Excess Permissions         | XX    |
+| Insufficient Permissions   | XX    |
+
+### Key Findings
+
+#### Excess Permissions
+
+| Role   | Feature   | Matrix | Existing ALFA |
+| ------ | --------- | ------ | ------------- |
+| Role A | Feature X | R      | CRUD          |
+| Role B | Feature Y | R      | CRUD          |
+
+#### Missing Roles
+
+| Role   | Feature   | Matrix | Existing ALFA  |
+| ------ | --------- | ------ | -------------- |
+| Role C | Feature Z | R      | Not Configured |
+
+#### Insufficient Permissions
+
+| Role   | Feature   | Matrix | Existing ALFA |
+| ------ | --------- | ------ | ------------- |
+| Role D | Feature X | CRUD   | R             |
+
+### Conclusion
+
+The generated ALFA policies accurately reflected the permissions defined in the authorization matrix. The observed authorization behavior resulted from discrepancies between the matrix sheets and the manually maintained ALFA policies currently deployed in the environment.
