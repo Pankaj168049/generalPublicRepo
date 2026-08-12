@@ -1,0 +1,137 @@
+check_expiry()
+{
+    local SOURCE="$1"
+    local NAME="$2"
+    local END_DATES="$3"
+    local DETAILS="$4"
+
+    local END_DATE
+    local END_EPOCH
+    local DAYS_LEFT
+    local STATUS
+
+    # Remove carriage-return characters if present
+    END_DATES=$(echo "$END_DATES" | tr -d '\r')
+
+    # Check if expiry date is empty
+    if [ -z "$END_DATES" ]
+    then
+        echo "Certificate : $NAME"
+        echo "Status      : UNABLE TO DETERMINE EXPIRY"
+        echo ""
+
+        write_alert \
+            "$SOURCE" \
+            "$DETAILS" \
+            "N/A" \
+            "N/A" \
+            "UNABLE TO DETERMINE EXPIRY"
+
+        return
+    fi
+
+    ###########################################################################
+    # Process every expiry date
+    #
+    # If END_DATES contains one date:
+    #
+    #   Date1
+    #
+    # it runs once.
+    #
+    # If END_DATES contains multiple dates:
+    #
+    #   Date1
+    #   Date2
+    #   Date3
+    #
+    # it processes all three independently.
+    ###########################################################################
+
+    while IFS= read -r END_DATE
+    do
+
+        # Skip empty lines
+        [ -z "$END_DATE" ] && continue
+
+        echo "------------------------------------------------------------"
+        echo "Certificate : $NAME"
+        echo "Expiry Date : $END_DATE"
+
+        #######################################################################
+        # Convert expiry date to epoch
+        #######################################################################
+
+        END_EPOCH=$(date -d "$END_DATE" +%s 2>/dev/null)
+
+        if [ -z "$END_EPOCH" ]
+        then
+
+            echo "Days Left   : N/A"
+            echo "Status      : INVALID EXPIRY DATE"
+            echo ""
+
+            write_alert \
+                "$SOURCE" \
+                "$DETAILS" \
+                "$END_DATE" \
+                "N/A" \
+                "INVALID EXPIRY DATE"
+
+            continue
+        fi
+
+        #######################################################################
+        # Calculate days remaining
+        #######################################################################
+
+        DAYS_LEFT=$(( (END_EPOCH - NOW_EPOCH) / 86400 ))
+
+        #######################################################################
+        # Determine certificate status
+        #######################################################################
+
+        if [ "$END_EPOCH" -le "$NOW_EPOCH" ]
+        then
+
+            STATUS="EXPIRED"
+
+        elif [ "$END_EPOCH" -le \
+               $((NOW_EPOCH + THRESHOLD_DAYS * 86400)) ]
+        then
+
+            STATUS="EXPIRING SOON"
+
+        else
+
+            STATUS="VALID"
+
+        fi
+
+        #######################################################################
+        # Display result
+        #######################################################################
+
+        echo "Days Left   : $DAYS_LEFT"
+        echo "Status      : $STATUS"
+        echo "------------------------------------------------------------"
+        echo ""
+
+        #######################################################################
+        # Generate alert for non-valid certificate
+        #######################################################################
+
+        if [ "$STATUS" != "VALID" ]
+        then
+
+            write_alert \
+                "$SOURCE" \
+                "$DETAILS" \
+                "$END_DATE" \
+                "$DAYS_LEFT" \
+                "$STATUS"
+
+        fi
+
+    done <<< "$END_DATES"
+}
