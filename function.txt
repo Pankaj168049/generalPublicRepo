@@ -1,0 +1,929 @@
+#!/bin/bash
+
+###############################################################################
+# Certificate Expiry Check
+#
+# Checks:
+#   1. TLS certificates
+#   2. Oracle Wallet certificates
+#   3. JWKS certificates
+#   4. JCEKS certificate - alias "alice"
+#   5. demoTrust.jks certificates - all aliases
+#
+# Status:
+#   VALID
+#   EXPIRING SOON
+#   EXPIRED
+###############################################################################
+
+set -u
+
+###############################################################################
+# CONFIGURATION
+###############################################################################
+
+THRESHOLD_DAYS=60
+TIMEOUT=10
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_DIR="$SCRIPT_DIR/logs"
+
+TLS_INPUT_FILE="/home/oracle/CertExpiryCheck/oidm_dev2.properties"
+WALLET_INPUT_FILE="/home/oracle/CertExpiryCheck/oidm_dev2_webgates.properties"
+JWKS_INPUT_FILE="/home/oracle/CertExpiryCheck/oidm_dev2_oauth.properties"
+
+# One properties file for JCEKS + demoTrust.jks
+KEYSTORE_INPUT_FILE="/home/oracle/CertExpiryCheck/oidm_dev2_keystores.properties"
+
+# JCEKS alias to check
+JCEKS_ALIAS="alice"
+
+# Oracle ORAPKI executable
+ORAPKI="/app/oracle/middleware/iam/oracle_common/bin/orapki"
+
+###############################################################################
+# INITIALIZATION
+###############################################################################
+
+mkdir -p "$LOG_DIR"
+
+NOW_EPOCH=$(date +%s)
+TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+
+LOG_FILE="$LOG_DIR/CertExpiryCheck_${TIMESTAMP}.log"
+ALERT_LOG_FILE="$LOG_DIR/Alert_ExpiringCertificates_${TIMESTAMP}.log"
+
+# Number of alerts found
+ALERT_FOUND=0
+
+# Redirect all output to both console and log
+exec > >(tee -a "$LOG_FILE") 2>&1
+
+
+###############################################################################
+# COMMON FUNCTIONS
+###############################################################################
+
+print_section()
+{
+    echo ""
+    echo "================================================================"
+    echo " $1"
+    echo "================================================================"
+    echo ""
+}
+
+
+###############################################################################
+# Write alert
+###############################################################################
+
+write_alert()
+{
+    local SOURCE="$1"
+    local DETAILS="$2"
+    local EXPIRY_DATE="$3"
+    local DAYS_LEFT="$4"
+    local STATUS="$5"
+
+    ALERT_FOUND=1
+
+    {
+        echo "----------------------------------------------------------------"
+        echo "$SOURCE"
+        echo "----------------------------------------------------------------"
+        echo "$DETAILS"
+        echo "Expiry Date : $EXPIRY_DATE"
+        echo "Days Left   : $DAYS_LEFT"
+        echo "Status      : $STATUS"
+        echo "----------------------------------------------------------------"
+        echo ""
+    } >> "$ALERT_LOG_FILE"
+}
+
+
+###############################################################################
+# Check certificate expiry
+#
+# Arguments:
+#   $1 = Source
+#   $2 = Certificate / alias / host
+#   $3 = Expiry date
+#   $4 = Additional details
+###############################################################################
+
+check_expiry()
+{
+    local SOURCE="$1"
+    local NAME="$2"
+    local END_DATE="$3"
+    local DETAILS="$4"
+
+    local END_EPOCH
+    local DAYS_LEFT
+    local STATUS
+
+    if [ -z "$END_DATE" ]
+    then
+        echo "Certificate : $NAME"
+        echo "Status      : UNABLE TO DETERMINE EXPIRY"
+        echo ""
+
+        write_alert \
+            "$SOURCE" \
+            "$DETAILS" \
+            "N/A" \
+            "N/A" \
+            "UNABLE TO DETERMINE EXPIRY"
+
+        return
+    fi
+
+    END_EPOCH=$(date -d "$END_DATE" +%s 2>/dev/null)
+
+    if [ -z "$END_EPOCH" ]
+    then
+        echo "Certificate : $NAME"
+        echo "Expiry Date : $END_DATE"
+        echo "Status      : INVALID EXPIRY DATE"
+        echo ""
+
+        write_alert \
+            "$SOURCE" \
+            "$DETAILS" \
+            "$END_DATE" \
+            "N/A" \
+            "INVALID EXPIRY DATE"
+
+        return
+    fi
+
+    # Calculate days remaining
+    DAYS_LEFT=$(( (END_EPOCH - NOW_EPOCH) / 86400 ))
+
+    # Determine status using epoch directly
+    if [ "$END_EPOCH" -le "$NOW_EPOCH" ]
+    then
+        STATUS="EXPIRED"
+
+    elif [ "$END_EPOCH" -le \
+           $((NOW_EPOCH + THRESHOLD_DAYS * 86400)) ]
+    then
+        STATUS="EXPIRING SOON"
+
+    else
+        STATUS="VALID"
+    fi
+
+    echo "Certificate : $NAME"
+    echo "Expiry Date : $END_DATE"
+    echo "Days Left   : $DAYS_LEFT"
+    echo "Status      : $STATUS"
+    echo ""
+
+    # Alert only if certificate is not valid
+    if [ "$STATUS" != "VALID" ]
+    then
+        write_alert \
+            "$SOURCE" \
+            "$DETAILS" \
+            "$END_DATE" \
+            "$DAYS_LEFT" \
+            "$STATUS"
+    fi
+}
+
+
+###############################################################################
+# Normalize a line
+#
+# Removes CR characters and leading/trailing spaces.
+###############################################################################
+
+normalize_line()
+{
+    echo "$1" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+
+###############################################################################
+# Read KEY=VALUE properties
+###############################################################################
+
+load_keystore_config()
+{
+    JCEKS_FILE=""
+    DEMO_TRUST_FILE=""
+
+    if [ ! -f "$KEYSTORE_INPUT_FILE" ]
+    then
+        echo "Keystore properties file not found:"
+        echo "$KEYSTORE_INPUT_FILE"
+        return 1
+    fi
+
+    while IFS='=' read -r KEY VALUE
+    do
+        KEY=$(normalize_line "$KEY")
+        VALUE=$(normalize_line "$VALUE")
+
+        [ -z "$KEY" ] && continue
+        [[ "$KEY" == \#* ]] && continue
+
+        case "$KEY" in
+
+            JCEKS_FILE)
+                JCEKS_FILE="$VALUE"
+                ;;
+
+            DEMO_TRUST_FILE)
+                DEMO_TRUST_FILE="$VALUE"
+                ;;
+
+        esac
+
+    done < "$KEYSTORE_INPUT_FILE"
+
+    return 0
+}
+
+
+###############################################################################
+# HEADER
+###############################################################################
+
+print_section "CERTIFICATE EXPIRY CHECK"
+
+echo "Script Started : $(date '+%d-%b-%Y %H:%M:%S')"
+echo "Log File       : $LOG_FILE"
+echo "Alert File     : $ALERT_LOG_FILE"
+echo "Threshold      : $THRESHOLD_DAYS Days"
+echo ""
+
+
+###############################################################################
+# LOAD JCEKS / DEMOTRUST CONFIGURATION
+###############################################################################
+
+load_keystore_config
+
+
+###############################################################################
+# TLS CERTIFICATES
+###############################################################################
+
+print_section "TLS CERTIFICATE CHECK"
+
+if [ -f "$TLS_INPUT_FILE" ]
+then
+
+    while IFS= read -r LINE || [ -n "$LINE" ]
+    do
+
+        LINE=$(normalize_line "$LINE")
+
+        # Skip blank lines
+        [ -z "$LINE" ] && continue
+
+        # Skip comments
+        [[ "$LINE" == \#* ]] && continue
+
+        #######################################################################
+        # Accept:
+        #
+        # host:port
+        #
+        # or:
+        #
+        # host port
+        #######################################################################
+
+        if [[ "$LINE" == *:* ]]
+        then
+            HOST="${LINE%%:*}"
+            PORT="${LINE##*:}"
+        else
+            read -r HOST PORT <<< "$LINE"
+        fi
+
+        [ -z "$HOST" ] && continue
+        [ -z "$PORT" ] && continue
+
+        echo "------------------------------------------------------------"
+        echo "Checking Host : $HOST:$PORT"
+        echo "------------------------------------------------------------"
+
+        #######################################################################
+        # Retrieve certificate
+        #######################################################################
+
+        CERT_END_DATE=$(
+            timeout "$TIMEOUT" \
+            openssl s_client \
+                -connect "$HOST:$PORT" \
+                -servername "$HOST" \
+                -showcerts \
+                </dev/null 2>/dev/null |
+            openssl x509 \
+                -noout \
+                -enddate 2>/dev/null |
+            cut -d= -f2
+        )
+
+        if [ -z "$CERT_END_DATE" ]
+        then
+
+            echo "Status : UNREACHABLE / NO CERTIFICATE"
+            echo ""
+
+            write_alert \
+                "TLS Server Certificate" \
+                "Host : $HOST:$PORT" \
+                "N/A" \
+                "N/A" \
+                "UNREACHABLE / NO CERTIFICATE"
+
+            continue
+        fi
+
+        #######################################################################
+        # Common expiry check
+        #######################################################################
+
+        check_expiry \
+            "TLS Server Certificate" \
+            "$HOST:$PORT" \
+            "$CERT_END_DATE" \
+            "Host : $HOST:$PORT"
+
+    done < "$TLS_INPUT_FILE"
+
+else
+
+    echo "TLS input file not found:"
+    echo "$TLS_INPUT_FILE"
+    echo ""
+
+fi
+
+
+###############################################################################
+# WALLET CERTIFICATES
+###############################################################################
+
+print_section "WALLET CERTIFICATE CHECK"
+
+if [ -f "$WALLET_INPUT_FILE" ]
+then
+
+    while IFS= read -r WALLET_DIR || [ -n "$WALLET_DIR" ]
+    do
+
+        WALLET_DIR=$(normalize_line "$WALLET_DIR")
+
+        [ -z "$WALLET_DIR" ] && continue
+        [[ "$WALLET_DIR" == \#* ]] && continue
+
+        echo "------------------------------------------------------------"
+        echo "Checking Wallet : $WALLET_DIR"
+        echo "------------------------------------------------------------"
+
+        if [ ! -d "$WALLET_DIR" ]
+        then
+            echo "Status : WALLET DIRECTORY NOT FOUND"
+            echo ""
+
+            write_alert \
+                "Oracle Wallet" \
+                "Wallet : $WALLET_DIR" \
+                "N/A" \
+                "N/A" \
+                "WALLET DIRECTORY NOT FOUND"
+
+            continue
+        fi
+
+        if [ ! -f "$WALLET_DIR/cwallet.sso" ]
+        then
+            echo "Status : cwallet.sso NOT FOUND"
+            echo ""
+
+            write_alert \
+                "Oracle Wallet" \
+                "Wallet : $WALLET_DIR" \
+                "N/A" \
+                "N/A" \
+                "CWALLET.SSO NOT FOUND"
+
+            continue
+        fi
+
+        #######################################################################
+        # Get certificate DNs
+        #######################################################################
+
+        DNS=$(
+            "$ORAPKI" wallet display \
+                -wallet "$WALLET_DIR/cwallet.sso" 2>/dev/null |
+            awk -F'Subject: ' '/Subject:/ {
+                print $2
+            }'
+        )
+
+        if [ -z "$DNS" ]
+        then
+            echo "No certificates found in wallet."
+            echo ""
+            continue
+        fi
+
+        #######################################################################
+        # Process each certificate
+        #######################################################################
+
+        while IFS= read -r DN
+        do
+
+            DN=$(normalize_line "$DN")
+
+            [ -z "$DN" ] && continue
+
+            echo ""
+            echo "Certificate DN : $DN"
+
+            TMP_CERT=$(mktemp)
+
+            ###################################################################
+            # Export certificate from wallet
+            ###################################################################
+
+            timeout "$TIMEOUT" \
+                "$ORAPKI" wallet export \
+                -wallet "$WALLET_DIR" \
+                -dn "$DN" \
+                -cert "$TMP_CERT" \
+                >/dev/null 2>&1
+
+            if [ ! -s "$TMP_CERT" ]
+            then
+
+                echo "Status : UNABLE TO EXPORT CERTIFICATE"
+                echo ""
+
+                write_alert \
+                    "Oracle Wallet Certificate" \
+                    "Wallet : $WALLET_DIR | DN : $DN" \
+                    "N/A" \
+                    "N/A" \
+                    "UNABLE TO EXPORT CERTIFICATE"
+
+                rm -f "$TMP_CERT"
+                continue
+            fi
+
+            ###################################################################
+            # Get expiry
+            ###################################################################
+
+            END_DATE=$(
+                openssl x509 \
+                    -in "$TMP_CERT" \
+                    -noout \
+                    -enddate 2>/dev/null |
+                cut -d= -f2
+            )
+
+            ###################################################################
+            # Remove temporary certificate
+            ###################################################################
+
+            rm -f "$TMP_CERT"
+
+            ###################################################################
+            # Common expiry check
+            ###################################################################
+
+            check_expiry \
+                "Oracle Wallet Certificate" \
+                "$DN" \
+                "$END_DATE" \
+                "Wallet : $WALLET_DIR | DN : $DN"
+
+        done <<< "$DNS"
+
+    done < "$WALLET_INPUT_FILE"
+
+else
+
+    echo "Wallet input file not found:"
+    echo "$WALLET_INPUT_FILE"
+    echo ""
+
+fi
+
+
+###############################################################################
+# JWKS CERTIFICATES
+###############################################################################
+
+print_section "JWKS CERTIFICATE CHECK"
+
+if [ -f "$JWKS_INPUT_FILE" ]
+then
+
+    while IFS= read -r URL || [ -n "$URL" ]
+    do
+
+        URL=$(normalize_line "$URL")
+
+        [ -z "$URL" ] && continue
+        [[ "$URL" == \#* ]] && continue
+
+        echo "------------------------------------------------------------"
+        echo "Checking JWKS URL : $URL"
+        echo "------------------------------------------------------------"
+
+        #######################################################################
+        # Get JWKS response
+        #######################################################################
+
+        RESPONSE=$(
+            curl -k -s \
+                --connect-timeout "$TIMEOUT" \
+                --max-time "$TIMEOUT" \
+                "$URL"
+        )
+
+        if [ -z "$RESPONSE" ]
+        then
+
+            echo "Status : UNREACHABLE / EMPTY RESPONSE"
+            echo ""
+
+            write_alert \
+                "JWKS Certificate" \
+                "JWKS OAuth URL : $URL" \
+                "N/A" \
+                "N/A" \
+                "UNREACHABLE / EMPTY RESPONSE"
+
+            continue
+        fi
+
+        #######################################################################
+        # Normalize JSON
+        #######################################################################
+
+        RESPONSE=$(echo "$RESPONSE" | tr -d '\n\r')
+
+        #######################################################################
+        # Extract first kid and x5c certificate
+        #
+        # This keeps the same behavior as your current script.
+        #######################################################################
+
+        KID=$(
+            echo "$RESPONSE" |
+            sed -n 's/.*"kid":"\([^"]*\)".*/\1/p'
+        )
+
+        CERT=$(
+            echo "$RESPONSE" |
+            sed -n 's/.*"x5c":\["\([^"]*\)".*/\1/p'
+        )
+
+        if [ -z "$CERT" ]
+        then
+
+            echo "Status : NO x5c CERTIFICATE FOUND"
+            echo ""
+
+            write_alert \
+                "JWKS Certificate" \
+                "JWKS OAuth URL : $URL | Key ID : ${KID:-UNKNOWN}" \
+                "N/A" \
+                "N/A" \
+                "NO x5c CERTIFICATE FOUND"
+
+            continue
+        fi
+
+        #######################################################################
+        # Convert Base64 certificate to PEM
+        #######################################################################
+
+        TMP_CERT=$(mktemp)
+
+        if ! printf '%s' "$CERT" |
+            base64 -d > "$TMP_CERT" 2>/dev/null
+        then
+
+            echo "Status : INVALID BASE64 CERTIFICATE"
+            echo ""
+
+            write_alert \
+                "JWKS Certificate" \
+                "JWKS OAuth URL : $URL | Key ID : ${KID:-UNKNOWN}" \
+                "N/A" \
+                "N/A" \
+                "INVALID BASE64 CERTIFICATE"
+
+            rm -f "$TMP_CERT"
+            continue
+        fi
+
+        #######################################################################
+        # Get expiry
+        #######################################################################
+
+        EXPIRY=$(
+            openssl x509 \
+                -inform DER \
+                -in "$TMP_CERT" \
+                -noout \
+                -enddate 2>/dev/null |
+            cut -d= -f2
+        )
+
+        #######################################################################
+        # Some JWKS x5c values are DER encoded.
+        # If DER parsing fails, try PEM parsing.
+        #######################################################################
+
+        if [ -z "$EXPIRY" ]
+        then
+            EXPIRY=$(
+                openssl x509 \
+                    -in "$TMP_CERT" \
+                    -noout \
+                    -enddate 2>/dev/null |
+                cut -d= -f2
+            )
+        fi
+
+        rm -f "$TMP_CERT"
+
+        if [ -z "$EXPIRY" ]
+        then
+
+            echo "Status : INVALID CERTIFICATE"
+            echo ""
+
+            write_alert \
+                "JWKS Certificate" \
+                "JWKS OAuth URL : $URL | Key ID : ${KID:-UNKNOWN}" \
+                "N/A" \
+                "N/A" \
+                "INVALID CERTIFICATE"
+
+            continue
+        fi
+
+        #######################################################################
+        # Common expiry check
+        #######################################################################
+
+        check_expiry \
+            "JWKS Certificate" \
+            "${KID:-UNKNOWN}" \
+            "$EXPIRY" \
+            "JWKS OAuth URL : $URL | Key ID : ${KID:-UNKNOWN}"
+
+    done < "$JWKS_INPUT_FILE"
+
+else
+
+    echo "JWKS input file not found:"
+    echo "$JWKS_INPUT_FILE"
+    echo ""
+
+fi
+
+
+###############################################################################
+# JCEKS CERTIFICATE - ALIAS ALICE
+###############################################################################
+
+print_section "JCEKS CERTIFICATE CHECK"
+
+if [ -z "${JCEKS_FILE:-}" ]
+then
+
+    echo "JCEKS_FILE is not configured."
+    echo ""
+
+elif [ ! -f "$JCEKS_FILE" ]
+then
+
+    echo "JCEKS file not found:"
+    echo "$JCEKS_FILE"
+    echo ""
+
+    write_alert \
+        "JCEKS Certificate" \
+        "File : $JCEKS_FILE | Alias : $JCEKS_ALIAS" \
+        "N/A" \
+        "N/A" \
+        "JCEKS FILE NOT FOUND"
+
+else
+
+    echo "JCEKS File : $JCEKS_FILE"
+    echo "Alias      : $JCEKS_ALIAS"
+    echo ""
+
+    ###########################################################################
+    # keytool asks for a password.
+    #
+    # Sending an empty line is equivalent to pressing ENTER manually.
+    #
+    # IMPORTANT:
+    # Do NOT use -exportcert.
+    ###########################################################################
+
+    JCEKS_OUTPUT=$(
+        printf '\n' |
+        keytool -list -v \
+            -keystore "$JCEKS_FILE" \
+            -storetype JCEKS \
+            -alias "$JCEKS_ALIAS" \
+            2>/dev/null
+    )
+
+    if [ -z "$JCEKS_OUTPUT" ]
+    then
+
+        echo "Status : UNABLE TO READ JCEKS / ALIAS NOT FOUND"
+        echo ""
+
+        write_alert \
+            "JCEKS Certificate" \
+            "File : $JCEKS_FILE | Alias : $JCEKS_ALIAS" \
+            "N/A" \
+            "N/A" \
+            "UNABLE TO READ JCEKS / ALIAS NOT FOUND"
+
+    else
+
+        #######################################################################
+        # Extract:
+        #
+        # Valid from: ... until: ...
+        #######################################################################
+
+        JCEKS_END_DATE=$(
+            echo "$JCEKS_OUTPUT" |
+            sed -n 's/^.*Valid from: .* until: \(.*\)$/\1/p' |
+            head -1
+        )
+
+        check_expiry \
+            "JCEKS Certificate" \
+            "$JCEKS_ALIAS" \
+            "$JCEKS_END_DATE" \
+            "File : $JCEKS_FILE | Alias : $JCEKS_ALIAS"
+
+    fi
+
+fi
+
+
+###############################################################################
+# DEMOTRUST.JKS CERTIFICATES
+###############################################################################
+
+print_section "DEMOTRUST.JKS CERTIFICATE CHECK"
+
+if [ -z "${DEMO_TRUST_FILE:-}" ]
+then
+
+    echo "DEMO_TRUST_FILE is not configured."
+    echo ""
+
+elif [ ! -f "$DEMO_TRUST_FILE" ]
+then
+
+    echo "Truststore not found:"
+    echo "$DEMO_TRUST_FILE"
+    echo ""
+
+    write_alert \
+        "demoTrust.jks" \
+        "File : $DEMO_TRUST_FILE" \
+        "N/A" \
+        "N/A" \
+        "TRUSTSTORE FILE NOT FOUND"
+
+else
+
+    echo "TrustStore : $DEMO_TRUST_FILE"
+    echo ""
+
+    ###########################################################################
+    # Read complete truststore.
+    #
+    # Empty line is supplied when keytool asks for password.
+    ###########################################################################
+
+    TRUSTSTORE_OUTPUT=$(
+        printf '\n' |
+        keytool -list -v \
+            -keystore "$DEMO_TRUST_FILE" \
+            -storetype JKS \
+            2>/dev/null
+    )
+
+    if [ -z "$TRUSTSTORE_OUTPUT" ]
+    then
+
+        echo "Status : UNABLE TO READ TRUSTSTORE"
+        echo ""
+
+        write_alert \
+            "demoTrust.jks" \
+            "File : $DEMO_TRUST_FILE" \
+            "N/A" \
+            "N/A" \
+            "UNABLE TO READ TRUSTSTORE"
+
+    else
+
+        #######################################################################
+        # Extract:
+        #
+        # Alias name: <alias>
+        #
+        # Valid from: ... until: <expiry>
+        #
+        # Output:
+        #
+        # alias|expiry
+        #######################################################################
+
+        while IFS='|' read -r TRUST_ALIAS TRUST_END_DATE
+        do
+
+            [ -z "$TRUST_ALIAS" ] && continue
+            [ -z "$TRUST_END_DATE" ] && continue
+
+            check_expiry \
+                "demoTrust.jks Certificate" \
+                "$TRUST_ALIAS" \
+                "$TRUST_END_DATE" \
+                "File : $DEMO_TRUST_FILE | Alias : $TRUST_ALIAS"
+
+        done < <(
+            echo "$TRUSTSTORE_OUTPUT" |
+            awk '
+                /^Alias name:/ {
+                    alias=$0
+                    sub(/^Alias name: /, "", alias)
+                }
+
+                /Valid from:/ {
+                    expiry=$0
+                    sub(/^.*until: /, "", expiry)
+
+                    if (alias != "") {
+                        print alias "|" expiry
+                    }
+
+                    alias=""
+                }
+            '
+        )
+
+    fi
+
+fi
+
+
+###############################################################################
+# FOOTER
+###############################################################################
+
+print_section "CHECK COMPLETED"
+
+echo "Script Completed : $(date '+%d-%b-%Y %H:%M:%S')"
+echo ""
+
+if [ "$ALERT_FOUND" -eq 1 ]
+then
+
+    echo "ALERTS FOUND"
+    echo "Alert File : $ALERT_LOG_FILE"
+    echo ""
+
+    exit 1
+
+else
+
+    # Remove empty alert file if one was never written
+    rm -f "$ALERT_LOG_FILE" 2>/dev/null
+
+    echo "No certificates are expiring within $THRESHOLD_DAYS days."
+    echo ""
+
+    exit 0
+
+fi
